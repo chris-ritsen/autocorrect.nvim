@@ -20,6 +20,8 @@ Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect
 
 ### Forked Neovim (neovim loads all abbreviations at startup instantly)
 
+The [forked Neovim](https://github.com/chris-ritsen/neovim/tree/load-abbrev-from-file-at-startup) loads abbreviations from `~/.local/share/nvim/abbrev` at startup.
+
 ```lua
 {
   "chris-ritsen/autocorrect.nvim",
