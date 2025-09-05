@@ -4,7 +4,7 @@ Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect
 
 ## Installation and Setup
 
-### Standard Neovim (plugin adds all abbreviations slowly in the background)
+### Standard Neovim (plugin adds all abbreviations in the background in batches, blocks UI slightly)
 
 ```lua
 {
@@ -18,7 +18,7 @@ Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect
 }
 ```
 
-### Forked Neovim (neovim loads all abbreviations at startup instantly)
+### Forked Neovim (neovim loads all abbreviations at startup instantly, no UI blocking)
 
 The [forked Neovim](https://github.com/chris-ritsen/neovim/tree/load-abbrev-from-file-at-startup) loads abbreviations from `~/.local/share/nvim/abbrev` at startup.
 
@@ -29,6 +29,20 @@ The [forked Neovim](https://github.com/chris-ritsen/neovim/tree/load-abbrev-from
     require("autocorrect").setup({
       auto_load_abbreviations = false,
       autocorrect_paragraph_keymap = '<Leader>d',
+    })
+  end,
+}
+```
+
+### Minimal config (no automatic loading or keymappings)
+
+```lua
+{
+  "chris-ritsen/autocorrect.nvim",
+  config = function()
+    require("autocorrect").setup({
+      auto_load_abbreviations = false,
+      autocorrect_paragraph_keymap = nil,
     })
   end,
 }

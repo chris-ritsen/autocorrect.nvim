@@ -62,35 +62,39 @@ function M.setup_abbreviations_file()
   end
 end
 
-M.abbrev_job = nil
 M.exiting = false
 
 function M.load_abbreviations()
   local file_to_load = M.target_file
   if vim.uv.fs_stat(file_to_load) then
-    M.abbrev_job = vim.fn.jobstart({ 'cat', file_to_load }, {
-      on_stdout = function(_, data)
-        if M.exiting then return end
-        for _, line in ipairs(data) do
-          if line and line ~= '' then
-            local wrong, right = line:match '^(%S+)%s+(.+)$'
-            if wrong and right and not M.exiting then
-              vim.schedule(function()
-                if not M.exiting then vim.cmd(('iabbrev %s %s'):format(wrong, right)) end
-              end)
-            end
-          end
-        end
-      end,
-      stdout_buffered = false,
+    vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimLeave', 'ExitPre' }, {
+      callback = function() M.exiting = true end,
     })
 
-    vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimLeave', 'ExitPre' }, {
-      callback = function()
-        M.exiting = true
-        if M.abbrev_job then vim.fn.jobstop(M.abbrev_job) end
-      end,
-    })
+    vim.schedule(function()
+      if M.exiting then return end
+      local lines = vim.fn.readfile(file_to_load)
+      local batch_size = 100
+      local index = 1
+
+      local function process_batch()
+        if M.exiting or index > #lines then return end
+
+        local end_index = math.min(index + batch_size - 1, #lines)
+        for i = index, end_index do
+          local line = lines[i]
+          if line and line ~= '' then
+            local wrong, right = line:match '^(%S+)%s+(.+)$'
+            if wrong and right then vim.cmd(('iabbrev %s %s'):format(wrong, right)) end
+          end
+        end
+
+        index = end_index + 1
+        if index <= #lines then vim.schedule(process_batch) end
+      end
+
+      process_batch()
+    end)
   end
 end
 
