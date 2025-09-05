@@ -5,6 +5,7 @@ M.config = {
   autocorrect_paragraph_keymap = '<Leader>d',
   source_file = nil,
   target_file = nil,
+  log_level = 'info', -- 'debug', 'info', 'warn', 'error'
 }
 
 function M.setup(opts)
@@ -63,42 +64,206 @@ function M.setup_abbreviations_file()
 end
 
 M.exiting = false
+M.stats = {
+  load_start_time = nil,
+  load_end_time = nil,
+  abbreviations_loaded = 0,
+  file_loaded_from = nil,
+  logs = {},
+  failed_abbreviations = {},
+  duplicates = {},
+}
 
-function M.load_abbreviations()
-  local file_to_load = M.target_file
-  if vim.uv.fs_stat(file_to_load) then
-    vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimLeave', 'ExitPre' }, {
-      callback = function() M.exiting = true end,
-    })
+local log_levels = { debug = 0, info = 1, warn = 2, error = 3 }
 
-    vim.schedule(function()
-      if M.exiting then return end
-      local lines = vim.fn.readfile(file_to_load)
-      local batch_size = 100
-      local index = 1
+local function log(level, msg)
+  local config_level = log_levels[M.config.log_level] or 1
 
-      local function process_batch()
-        if M.exiting or index > #lines then return end
-
-        local end_index = math.min(index + batch_size - 1, #lines)
-        for i = index, end_index do
-          local line = lines[i]
-          if line and line ~= '' then
-            local wrong, right = line:match '^(%S+)%s+(.+)$'
-            if wrong and right then vim.cmd(('iabbrev %s %s'):format(wrong, right)) end
-          end
-        end
-
-        index = end_index + 1
-        if index <= #lines then vim.schedule(process_batch) end
-      end
-
-      process_batch()
-    end)
+  if log_levels[level] >= config_level then
+    local timestamp = os.date '%H:%M:%S'
+    table.insert(M.stats.logs, { level = level, msg = msg, timestamp = timestamp })
+    if #M.stats.logs > 50 then table.remove(M.stats.logs, 1) end
   end
 end
 
-function M.clear_abbreviations() vim.cmd 'iabclear' end
+local function process_line(line, seen)
+  if not line or line == '' then return end
+
+  local space_pos = line:find ' '
+  if not space_pos then
+    table.insert(M.stats.failed_abbreviations, { line = line, error = 'Failed to parse line' })
+    return
+  end
+
+  local wrong = line:sub(1, space_pos - 1)
+  local right = line:sub(space_pos + 1)
+  if wrong == '' or right == '' then
+    table.insert(M.stats.failed_abbreviations, { line = line, error = 'Failed to parse line' })
+    return
+  end
+
+  if seen[wrong] then
+    table.insert(M.stats.duplicates, { line = line, original = seen[wrong] })
+    return
+  end
+
+  seen[wrong] = line
+  vim.cmd(('iabbrev %s %s'):format(wrong, right))
+  M.stats.abbreviations_loaded = M.stats.abbreviations_loaded + 1
+end
+
+local function log_completion()
+  M.stats.load_end_time = vim.uv.hrtime()
+  local duration = (M.stats.load_end_time - M.stats.load_start_time) / 1000000
+  local final_count = M.get_abbrev_count()
+  log('info', string.format('Loaded %d abbreviations in %.2fms', M.stats.abbreviations_loaded, duration))
+  log('info', string.format('Final active count: %d', final_count))
+  if #M.stats.duplicates > 0 then
+    log('warn', string.format('Skipped %d duplicate abbreviations', #M.stats.duplicates))
+  end
+  if #M.stats.failed_abbreviations > 0 then
+    log('warn', string.format('%d abbreviations failed to load', #M.stats.failed_abbreviations))
+  end
+end
+
+local function process_abbreviations(lines)
+  M.stats.load_start_time = vim.uv.hrtime()
+  local non_empty_lines = #vim.tbl_filter(function(line) return line and line ~= '' end, lines)
+  log('info', 'Starting to load ' .. non_empty_lines .. ' abbreviation entries')
+
+  vim.schedule(function()
+    local seen = {}
+    local batch_size = 250
+    local index = 1
+    local loading = false
+    local augroup = vim.api.nvim_create_augroup('autocorrect_batch', { clear = true })
+
+    local function stop_loading() loading = false end
+
+    local function process_batch()
+      if M.exiting or index > #lines or not loading then return end
+
+      local end_index = math.min(index + batch_size - 1, #lines)
+
+      for i = index, end_index do
+        process_line(lines[i], seen)
+        if not loading then return end
+      end
+
+      index = end_index + 1
+
+      if index <= #lines then
+        vim.defer_fn(process_batch, 0)
+      else
+        log_completion()
+      end
+    end
+
+    local function start_loading()
+      if not loading and index <= #lines then
+        loading = true
+        process_batch()
+      end
+    end
+
+    vim.api.nvim_create_autocmd({ 'CursorHold', 'CursorHoldI' }, {
+      group = augroup,
+      callback = start_loading,
+    })
+
+    vim.api.nvim_create_autocmd(
+      { 'CursorMoved', 'CursorMovedI', 'InsertEnter', 'TextChanged', 'TextChangedI', 'CmdlineChanged' },
+      {
+        group = augroup,
+        callback = stop_loading,
+      }
+    )
+
+    start_loading()
+  end)
+end
+
+local function read_file_async(file_path, callback)
+  log('info', 'Loading abbreviations from: ' .. file_path)
+  M.stats.file_loaded_from = file_path
+
+  vim.uv.fs_stat(file_path, function(err, stat)
+    if err or not stat then
+      log('error', 'Failed to stat file: ' .. (err or 'unknown error'))
+      return
+    end
+
+    vim.uv.fs_open(file_path, 'r', 438, function(err, fd)
+      if err or not fd then
+        log('error', 'Failed to open file: ' .. (err or 'unknown error'))
+        return
+      end
+
+      vim.uv.fs_read(fd, stat.size, 0, function(err, data)
+        vim.uv.fs_close(fd)
+        if err or not data then
+          log('error', 'Failed to read file: ' .. (err or 'unknown error'))
+          return
+        end
+        callback(vim.split(data, '\n'))
+      end)
+    end)
+  end)
+end
+
+function M.load_abbreviations()
+  vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimLeave', 'ExitPre' }, {
+    callback = function() M.exiting = true end,
+  })
+
+  vim.api.nvim_create_autocmd('CursorHold', {
+    once = true,
+    callback = function()
+      if M.exiting then return end
+      read_file_async(M.target_file, process_abbreviations)
+    end,
+  })
+end
+
+function M.clear_abbreviations()
+  vim.cmd 'iabclear'
+  M.stats.abbreviations_loaded = 0
+  log('info', 'Cleared all abbreviations')
+end
+
+function M.reload_abbreviations()
+  log('info', 'Reloading abbreviations')
+  M.clear_abbreviations()
+  read_file_async(M.target_file, process_abbreviations)
+end
+
+function M.get_abbrev_count()
+  local output = vim.fn.execute 'iabbrev'
+  if output:match 'No abbreviations' or output:match '^%s*$' then return 0 end
+  local lines = vim.split(output, '\n')
+
+  return #vim.tbl_filter(
+    function(line) return line:match '^%S+%s+' and not line:match '^Name' and not line:match '^%-%-' end,
+    lines
+  )
+end
+
+function M.show_stats()
+  local actual_count = M.get_abbrev_count()
+  local stats = {
+    'Autocorrect Statistics:',
+    '  File: ' .. (M.stats.file_loaded_from or 'none'),
+    '  Abbreviations loaded: ' .. M.stats.abbreviations_loaded,
+    '  Actual abbreviations active: ' .. actual_count,
+  }
+
+  if M.stats.load_start_time and M.stats.load_end_time then
+    local duration = (M.stats.load_end_time - M.stats.load_start_time) / 1000000
+    table.insert(stats, '  Load time: ' .. string.format('%.2fms', duration))
+  end
+
+  vim.notify(table.concat(stats, '\n'), vim.log.levels.INFO)
+end
 
 local function get_all_spell_suggestions(line)
   local suggestions = {}
@@ -143,13 +308,14 @@ function M.autocorrect_range(first, last)
   M.end_line = last
 
   local entries = {}
+
   for k, v in pairs(corrections) do
     table.insert(entries, k .. ' ' .. v)
   end
 
   local height = math.min(15, #entries)
-
   local existing_buf = vim.fn.bufnr '__Autocorrect__'
+
   if existing_buf ~= -1 then
     vim.cmd 'belowright sbuffer __Autocorrect__'
     vim.cmd('resize ' .. height)
@@ -192,6 +358,7 @@ function M.commit()
 
   for _, line in ipairs(lines) do
     local wrong, right = line:match '^(%S+)%s+(%S+)$'
+
     if wrong and right then
       vim.api.nvim_buf_call(
         M.last_buf,
@@ -206,6 +373,7 @@ function M.commit()
           )
         end
       )
+
       vim.cmd(('iabbrev %s %s'):format(wrong, right))
       vim.fn.writefile({ wrong .. ' ' .. right }, M.target_file, 'a')
     end
