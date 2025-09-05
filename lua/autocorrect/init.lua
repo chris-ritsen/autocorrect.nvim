@@ -2,20 +2,24 @@ local M = {}
 
 M.config = {
   auto_load_abbreviations = true,
-  keymap = '<Leader>d',
+  autocorrect_paragraph_keymap = '<Leader>d',
+  source_file = nil,
+  target_file = nil,
 }
 
 function M.setup(opts)
   opts = opts or {}
   M.config = vim.tbl_deep_extend('force', M.config, opts)
 
-  M.abbrev_file = M.get_abbreviations_path()
-  M.setup_abbreviations_symlink()
+  M.abbrev_file = M.config.source_file or M.get_abbreviations_path()
+  M.target_file = M.config.target_file or (vim.fn.stdpath 'data' .. '/abbrev')
+
+  M.setup_abbreviations_file()
 
   if M.config.auto_load_abbreviations then M.load_abbreviations() end
 
-  if M.config.keymap then
-    vim.keymap.set('n', M.config.keymap, function()
+  if M.config.autocorrect_paragraph_keymap then
+    vim.keymap.set('n', M.config.autocorrect_paragraph_keymap, function()
       local current = vim.api.nvim_win_get_cursor(0)[1]
       local start = current
       while start > 1 and vim.fn.getline(start - 1):match '^%s*$' == nil do
@@ -38,26 +42,55 @@ function M.get_abbreviations_path()
   return vim.fs.dirname(vim.fs.dirname(vim.fs.dirname(source))) .. '/abbrev'
 end
 
-function M.setup_abbreviations_symlink()
-  local abbrev_file = M.abbrev_file
-  local symlink_path = vim.fn.stdpath 'data' .. '/abbrev'
+function M.setup_abbreviations_file()
+  local stat = vim.uv.fs_stat(M.target_file)
+  local is_symlink = stat and vim.uv.fs_readlink(M.target_file) ~= nil
+  local is_regular_file = stat and not is_symlink
 
-  local current_link = vim.uv.fs_readlink(symlink_path)
-  if current_link ~= abbrev_file then
-    local stat = vim.uv.fs_stat(symlink_path)
-    if stat then vim.uv.fs_unlink(symlink_path) end
+  if is_regular_file then return end
 
-    vim.uv.fs_symlink(abbrev_file, symlink_path)
+  if M.abbrev_file ~= M.target_file then
+    local current_link = vim.uv.fs_readlink(M.target_file)
+    if current_link ~= M.abbrev_file then
+      if stat then vim.uv.fs_unlink(M.target_file) end
+
+      local parent_dir = vim.fs.dirname(M.target_file)
+      vim.fn.mkdir(parent_dir, 'p')
+
+      vim.uv.fs_symlink(M.abbrev_file, M.target_file)
+    end
   end
 end
 
+M.abbrev_job = nil
+M.exiting = false
+
 function M.load_abbreviations()
-  if vim.uv.fs_stat(M.abbrev_file) then
-    local lines = vim.fn.readfile(M.abbrev_file)
-    for _, line in ipairs(lines) do
-      local wrong, right = line:match '^(%S+)%s+(.+)$'
-      if wrong and right then vim.cmd(('iabbrev %s %s'):format(wrong, right)) end
-    end
+  local file_to_load = M.target_file
+  if vim.uv.fs_stat(file_to_load) then
+    M.abbrev_job = vim.fn.jobstart({ 'cat', file_to_load }, {
+      on_stdout = function(_, data)
+        if M.exiting then return end
+        for _, line in ipairs(data) do
+          if line and line ~= '' then
+            local wrong, right = line:match '^(%S+)%s+(.+)$'
+            if wrong and right and not M.exiting then
+              vim.schedule(function()
+                if not M.exiting then vim.cmd(('iabbrev %s %s'):format(wrong, right)) end
+              end)
+            end
+          end
+        end
+      end,
+      stdout_buffered = false,
+    })
+
+    vim.api.nvim_create_autocmd({ 'VimLeavePre', 'VimLeave', 'ExitPre' }, {
+      callback = function()
+        M.exiting = true
+        if M.abbrev_job then vim.fn.jobstop(M.abbrev_job) end
+      end,
+    })
   end
 end
 
@@ -109,12 +142,12 @@ function M.autocorrect_range(first, last)
   for k, v in pairs(corrections) do
     table.insert(entries, k .. ' ' .. v)
   end
-  
+
   local height = math.min(15, #entries)
-  
+
   local existing_buf = vim.fn.bufnr '__Autocorrect__'
   if existing_buf ~= -1 then
-    vim.cmd('belowright sbuffer __Autocorrect__')
+    vim.cmd 'belowright sbuffer __Autocorrect__'
     vim.cmd('resize ' .. height)
     vim.bo.modifiable = true
     vim.cmd '%delete _'
@@ -170,7 +203,7 @@ function M.commit()
         end
       )
       vim.cmd(('iabbrev %s %s'):format(wrong, right))
-      vim.fn.writefile({ wrong .. ' ' .. right }, M.abbrev_file, 'a')
+      vim.fn.writefile({ wrong .. ' ' .. right }, M.target_file, 'a')
     end
   end
 

@@ -2,30 +2,50 @@
 
 Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect).
 
-## Installation
+## Installation and Setup
 
-Using [lazy.nvim](https://github.com/folke/lazy.nvim):
+### Standard Neovim (plugin adds all abbreviations slowly in the background)
 
 ```lua
 {
   "chris-ritsen/autocorrect.nvim",
   config = function()
-    require("autocorrect").setup()
+    require("autocorrect").setup({
+      auto_load_abbreviations = true,
+      autocorrect_paragraph_keymap = '<Leader>d',
+    })
   end,
 }
 ```
 
-## Setup
+### Forked Neovim (neovim loads all abbreviations at startup instantly)
 
 ```lua
-require("autocorrect").setup()
+{
+  "chris-ritsen/autocorrect.nvim",
+  config = function()
+    require("autocorrect").setup({
+      auto_load_abbreviations = false,
+      autocorrect_paragraph_keymap = '<Leader>d',
+    })
+  end,
+}
 ```
 
 ## Usage
 
-The autocorrection list is symlinked to `~/.local/share/nvim/abbrev`.
+By default, the plugin's abbreviation list is symlinked to
+`~/.local/share/nvim/abbrev`. If you're using a custom file, symlinking is
+automatically skipped.
 
-Press `<leader>d` with the cursor over a paragraph with typos to open a window
-with all of the incorrectly spelled words. The typo will be on the left side
-with a suggested correction on the right side. Delete lines and/or edit
-the corrections and then press enter to save them to the abbrev file.
+If you have `auto_load_abbreviations = false`, you can manually load the abbreviations using:
+
+```
+:lua require('autocorrect').load_abbreviations()
+```
+
+Press `<leader>d` (or your configured keymap) with the cursor over a paragraph
+with typos to open a window with all of the incorrectly spelled words. The
+typo will be on the left side with a suggested correction on the right side.
+Delete lines and/or edit the corrections and then press enter to save them to
+the abbreviation file.
