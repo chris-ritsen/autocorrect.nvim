@@ -8,7 +8,7 @@ Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect
 
 The plugin adds all abbreviations in the background in batches,
 which blocks UI slightly once at startup. I've created a
-[patch](https://github.com/chris-ritsen/neovim/tree/load-abbrev-from-file-at-startup)
+[patch](https://github.com/chris-ritsen/neovim/tree/add-function-to-quickly-insert-iabbrev)
 for neovim that loads all of the abbreviations instantly.
 
 ```lua
