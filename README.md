@@ -4,7 +4,12 @@ Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect
 
 ## Installation and Setup
 
-### Standard Neovim (plugin adds all abbreviations in the background in batches, blocks UI slightly)
+### Default config
+
+The plugin adds all abbreviations in the background in batches,
+which blocks UI slightly once at startup. I've created a
+[patch](https://github.com/chris-ritsen/neovim/tree/load-abbrev-from-file-at-startup)
+for neovim that loads all of the abbreviations instantly.
 
 ```lua
 {
@@ -12,22 +17,6 @@ Neovim port of [vim-autocorrect](https://github.com/chris-ritsen/vim-autocorrect
   config = function()
     require("autocorrect").setup({
       auto_load_abbreviations = true,
-      autocorrect_paragraph_keymap = '<Leader>d',
-    })
-  end,
-}
-```
-
-### Forked Neovim (neovim loads all abbreviations at startup instantly, no UI blocking)
-
-The [forked Neovim](https://github.com/chris-ritsen/neovim/tree/load-abbrev-from-file-at-startup) loads abbreviations from `~/.local/share/nvim/abbrev` at startup.
-
-```lua
-{
-  "chris-ritsen/autocorrect.nvim",
-  config = function()
-    require("autocorrect").setup({
-      auto_load_abbreviations = false,
       autocorrect_paragraph_keymap = '<Leader>d',
     })
   end,
@@ -57,7 +46,7 @@ automatically skipped.
 If you have `auto_load_abbreviations = false`, you can manually load the abbreviations using:
 
 ```
-:lua require('autocorrect').load_abbreviations()
+lua require('autocorrect').load_abbreviations()
 ```
 
 Press `<leader>d` (or your configured keymap) with the cursor over a paragraph

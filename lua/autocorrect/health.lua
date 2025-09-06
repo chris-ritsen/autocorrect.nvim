@@ -13,12 +13,27 @@ function M.check()
   end
 
   local config = autocorrect.config
+
   if config then
     vim.health.ok 'Configuration loaded'
     vim.health.info('auto_load_abbreviations: ' .. tostring(config.auto_load_abbreviations))
+    vim.health.info('batch_size: ' .. config.batch_size)
     vim.health.info('keymap: ' .. (config.autocorrect_paragraph_keymap or 'none'))
   else
     vim.health.warn 'No configuration found'
+  end
+
+  if jit then
+    vim.health.ok('LuaJIT detected: ' .. jit.version)
+    local ffi_ok, ffi = pcall(require, 'ffi')
+
+    if ffi_ok then
+      vim.health.ok 'FFI available'
+    else
+      vim.health.warn 'FFI not available'
+    end
+  else
+    vim.health.warn 'Standard Lua detected (not LuaJIT) - using fallback method'
   end
 
   local target_file = autocorrect.target_file
@@ -26,6 +41,7 @@ function M.check()
 
   if target_file then
     local stat = vim.uv.fs_stat(target_file)
+
     if stat then
       vim.health.ok('Target file exists: ' .. target_file)
       vim.health.info('File size: ' .. stat.size .. ' bytes')
@@ -38,6 +54,7 @@ function M.check()
 
   if source_file then
     local stat = vim.uv.fs_stat(source_file)
+
     if stat then
       vim.health.ok('Source file exists: ' .. source_file)
       vim.health.info('File size: ' .. stat.size .. ' bytes')
@@ -50,6 +67,7 @@ function M.check()
 
   if target_file and source_file and target_file ~= source_file then
     local link = vim.uv.fs_readlink(target_file)
+
     if link == source_file then
       vim.health.ok 'Symlink correctly points to source file'
     else
@@ -78,6 +96,7 @@ function M.check()
 
   if #stats.duplicates > 0 then
     vim.health.warn(#stats.duplicates .. ' duplicate abbreviations skipped:')
+
     for _, dup in ipairs(stats.duplicates) do
       vim.health.info('  ' .. dup.line .. ' (original: ' .. dup.original .. ')')
     end
@@ -85,6 +104,7 @@ function M.check()
 
   if #stats.failed_abbreviations > 0 then
     vim.health.warn(#stats.failed_abbreviations .. ' abbreviations failed to load:')
+
     for _, failed in ipairs(stats.failed_abbreviations) do
       vim.health.error('  ' .. failed.line .. ' (' .. failed.error .. ')')
     end
@@ -92,6 +112,7 @@ function M.check()
 
   if #stats.logs > 0 then
     vim.health.info 'Recent activity:'
+
     for _, entry in ipairs(stats.logs) do
       local level_map = { debug = 'info', info = 'info', warn = 'warn', error = 'error' }
       local health_fn = vim.health[level_map[entry.level]] or vim.health.info
