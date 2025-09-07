@@ -23,19 +23,6 @@ function M.check()
     vim.health.warn 'No configuration found'
   end
 
-  if jit then
-    vim.health.ok('LuaJIT detected: ' .. jit.version)
-    local ffi_ok, ffi = pcall(require, 'ffi')
-
-    if ffi_ok then
-      vim.health.ok 'FFI available'
-    else
-      vim.health.warn 'FFI not available'
-    end
-  else
-    vim.health.warn 'Standard Lua detected (not LuaJIT) - using fallback method'
-  end
-
   local target_file = autocorrect.target_file
   local source_file = autocorrect.abbrev_file
 

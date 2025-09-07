@@ -5,28 +5,6 @@ M.end_line = nil
 M.exiting = false
 M.last_buf = nil
 
-local ffi_available = false
-local add_abbrev_fast = nil
-
-if jit then
-  local ffi = require 'ffi'
-  ffi.cdef [[
-    void add_iabbrev(const char *lhs, const char *rhs);
-  ]]
-
-  local function test_ffi_function() local dummy = ffi.C.add_iabbrev end
-
-  if pcall(test_ffi_function) then
-    add_abbrev_fast = function(lhs, rhs)
-      local lhs_cstr = ffi.new('char[?]', #lhs + 1, lhs)
-      local rhs_cstr = ffi.new('char[?]', #rhs + 1, rhs)
-      ffi.C.add_iabbrev(lhs_cstr, rhs_cstr)
-    end
-
-    ffi_available = true
-  end
-end
-
 M.stats = {
   abbreviations_loaded = 0,
   duplicates = {},
@@ -35,13 +13,15 @@ M.stats = {
   load_end_time = nil,
   load_start_time = nil,
   logs = {},
+  loading_method = nil,
+  load_timing = nil,
 }
 
 M.config = {
   auto_load_abbreviations = true,
   autocorrect_paragraph_keymap = '<Leader>d',
   batch_size = 250,
-  log_level = 'info', -- 'debug', 'info', 'warn', 'error'
+  log_level = 'debug', -- 'debug', 'info', 'warn', 'error'
   source_file = nil,
   target_file = nil,
 }
@@ -69,19 +49,13 @@ local function parse_line(line, seen)
   if not line or line == '' then return nil end
 
   local space_pos = line:find ' '
-
-  if not space_pos then
+  if not space_pos or space_pos == 1 or space_pos == #line then
     table.insert(M.stats.failed_abbreviations, { line = line, error = 'Failed to parse line' })
     return nil
   end
 
   local wrong = line:sub(1, space_pos - 1)
   local right = line:sub(space_pos + 1)
-
-  if wrong == '' or right == '' then
-    table.insert(M.stats.failed_abbreviations, { line = line, error = 'Failed to parse line' })
-    return nil
-  end
 
   if seen and seen[wrong] then
     table.insert(M.stats.duplicates, { line = line, original = seen[wrong] })
@@ -93,12 +67,7 @@ local function parse_line(line, seen)
 end
 
 local function define_abbrev(lhs, rhs)
-  if ffi_available then
-    add_abbrev_fast(lhs, rhs)
-  else
-    vim.cmd(('iabbrev %s %s'):format(lhs, rhs))
-  end
-
+  vim.cmd(('iabbrev %s %s'):format(lhs, rhs))
   M.stats.abbreviations_loaded = M.stats.abbreviations_loaded + 1
 end
 
@@ -164,12 +133,99 @@ end
 -- Lifecycle
 
 local function process_abbreviations(lines)
-  M.stats.load_start_time = vim.uv.hrtime()
+  local processing_start_time = vim.uv.hrtime()
 
+  local filter_start = vim.uv.hrtime()
   local non_empty_lines = #vim.tbl_filter(function(line) return line and line ~= '' end, lines)
+  local filter_end = vim.uv.hrtime()
+  log('debug', string.format('Filter took %.2fms for %d lines', elapsed_ms(filter_start, filter_end), #lines))
 
-  local method = ffi_available and 'FFI' or 'iabbrev (fallback)'
-  log('info', 'Starting to load ' .. non_empty_lines .. ' abbreviation entries using ' .. method)
+  if non_empty_lines > 0 then
+    local lhs_array = {}
+    local rhs_array = {}
+    local seen = {}
+    local count = 0
+    local parsing_start = vim.uv.hrtime()
+
+    for _, line in ipairs(lines) do
+      local wrong, right = parse_line(line, seen)
+
+      if wrong and right then
+        count = count + 1
+        lhs_array[count] = wrong
+        rhs_array[count] = right
+      end
+    end
+
+    local parsing_end = vim.uv.hrtime()
+
+    log(
+      'debug',
+      string.format('Parsing took %.2fms, found %d valid abbreviations', elapsed_ms(parsing_start, parsing_end), count)
+    )
+
+    if #lhs_array > 0 then
+      local start_time = vim.uv.hrtime()
+      local success = pcall(vim.api.nvim_set_keymap, 'ia', lhs_array, rhs_array, {})
+
+      if success then
+        local end_time = vim.uv.hrtime()
+        M.stats.abbreviations_loaded = #lhs_array
+        M.stats.loading_method = 'Bulk API'
+        M.stats.load_end_time = end_time
+        M.stats.load_timing = elapsed_ms(start_time, end_time)
+
+        log('info', string.format('API loaded %d abbreviations in %.2fms', #lhs_array, M.stats.load_timing))
+
+        local total_duration = elapsed_ms(processing_start_time, M.stats.load_end_time)
+        log('info', string.format('Total processing time: %.2fms', total_duration))
+        return
+      else
+        log('info', 'Bulk API failed, falling back to async individual commands')
+        local reconstructed_lines = {}
+
+        for i = 1, #lhs_array do
+          reconstructed_lines[i] = lhs_array[i] .. ' ' .. rhs_array[i]
+        end
+
+        M.stats.loading_method = 'iabbrev commands'
+        log('info', 'Starting async load of ' .. #reconstructed_lines .. ' abbreviation entries')
+
+        local batch_size = M.config.batch_size
+        local index = 1
+
+        local function process_next_batch()
+          if M.exiting or index > #reconstructed_lines then
+            M.stats.load_end_time = vim.uv.hrtime()
+            local duration = elapsed_ms(M.stats.load_start_time, M.stats.load_end_time)
+
+            log(
+              'info',
+              string.format('Async loaded %d abbreviations in %.2fms', M.stats.abbreviations_loaded, duration)
+            )
+
+            return
+          end
+
+          local end_index = math.min(index + batch_size - 1, #reconstructed_lines)
+
+          for i = index, end_index do
+            local wrong, right = parse_line(reconstructed_lines[i], nil)
+            if wrong and right then define_abbrev(wrong, right) end
+          end
+
+          index = end_index + 1
+          vim.defer_fn(process_next_batch, 1)
+        end
+
+        vim.defer_fn(process_next_batch, 0)
+        return
+      end
+    end
+  end
+
+  M.stats.loading_method = 'iabbrev commands'
+  log('info', 'Starting to load ' .. non_empty_lines .. ' abbreviation entries using iabbrev commands')
 
   local function log_completion()
     M.stats.load_end_time = vim.uv.hrtime()
@@ -194,69 +250,62 @@ local function process_abbreviations(lines)
     if wrong and right then define_abbrev(wrong, right) end
   end
 
-  if ffi_available then
+  vim.schedule(function()
     local seen = {}
-    for i = 1, #lines do
-      if not M.exiting then process_line(lines[i], seen) end
+    local batch_size = M.config.batch_size
+    local index = 1
+    local loading = false
+    local augroup = vim.api.nvim_create_augroup('autocorrect_batch', { clear = true })
+    local function stop_loading() loading = false end
+
+    local function process_batch()
+      if M.exiting or index > #lines or not loading then return end
+
+      local end_index = math.min(index + batch_size - 1, #lines)
+
+      for i = index, end_index do
+        process_line(lines[i], seen)
+        if not loading then return end
+      end
+
+      index = end_index + 1
+
+      if index <= #lines then
+        vim.schedule(process_batch)
+      else
+        log_completion()
+      end
     end
-    log_completion()
-  else
-    vim.schedule(function()
-      local seen = {}
-      local batch_size = M.config.batch_size
-      local index = 1
-      local loading = false
-      local augroup = vim.api.nvim_create_augroup('autocorrect_batch', { clear = true })
 
-      local function stop_loading() loading = false end
-
-      local function process_batch()
-        if M.exiting or index > #lines or not loading then return end
-
-        local end_index = math.min(index + batch_size - 1, #lines)
-
-        for i = index, end_index do
-          process_line(lines[i], seen)
-          if not loading then return end
-        end
-
-        index = end_index + 1
-
-        if index <= #lines then
-          vim.schedule(process_batch)
-        else
-          log_completion()
-        end
+    local function start_loading()
+      if not loading and index <= #lines then
+        loading = true
+        process_batch()
       end
+    end
 
-      local function start_loading()
-        if not loading and index <= #lines then
-          loading = true
-          process_batch()
-        end
-      end
+    vim.api.nvim_create_autocmd({ 'CursorHold', 'CursorHoldI' }, {
+      callback = start_loading,
+      group = augroup,
+    })
 
-      vim.api.nvim_create_autocmd({ 'CursorHold', 'CursorHoldI' }, {
-        callback = start_loading,
+    vim.api.nvim_create_autocmd(
+      { 'CursorMoved', 'CursorMovedI', 'InsertEnter', 'TextChanged', 'TextChangedI', 'CmdlineChanged' },
+      {
+        callback = stop_loading,
         group = augroup,
-      })
+      }
+    )
 
-      vim.api.nvim_create_autocmd(
-        { 'CursorMoved', 'CursorMovedI', 'InsertEnter', 'TextChanged', 'TextChangedI', 'CmdlineChanged' },
-        {
-          callback = stop_loading,
-          group = augroup,
-        }
-      )
-
-      start_loading()
-    end)
-  end
+    start_loading()
+  end)
 end
 
 local function read_file_async(file_path, callback)
   log('info', 'Loading abbreviations from: ' .. file_path)
   M.stats.file_loaded_from = file_path
+  M.stats.load_start_time = vim.uv.hrtime()
+  local file_start_time = M.stats.load_start_time
 
   vim.uv.fs_stat(file_path, function(err, stat)
     if err or not stat then
@@ -278,6 +327,10 @@ local function read_file_async(file_path, callback)
           return
         end
 
+        local file_end_time = vim.uv.hrtime()
+        local file_duration = elapsed_ms(file_start_time, file_end_time)
+        log('info', string.format('File loaded in %.2fms', file_duration))
+
         callback(vim.split(data, '\n'))
       end)
     end)
@@ -289,17 +342,14 @@ function M.load_abbreviations()
     callback = function() M.exiting = true end,
   })
 
-  if ffi_available then
-    read_file_async(M.target_file, process_abbreviations)
-  else
-    vim.api.nvim_create_autocmd('CursorHold', {
-      once = true,
-      callback = function()
-        if M.exiting then return end
-        read_file_async(M.target_file, process_abbreviations)
-      end,
-    })
-  end
+  local file_start = vim.uv.hrtime()
+  local data = vim.fn.readfile(M.target_file)
+  local file_end = vim.uv.hrtime()
+
+  log('info', string.format('File loaded in %.2fms', elapsed_ms(file_start, file_end)))
+  M.stats.file_loaded_from = M.target_file
+  M.stats.load_start_time = file_start
+  process_abbreviations(data)
 end
 
 function M.clear_abbreviations()
@@ -335,12 +385,15 @@ function M.show_stats()
     '  File: ' .. (M.stats.file_loaded_from or 'none'),
     '  Abbreviations loaded: ' .. M.stats.abbreviations_loaded,
     '  Actual abbreviations active: ' .. actual_count,
+    '  Loading method: ' .. (M.stats.loading_method or 'unknown'),
   }
 
   if M.stats.load_start_time and M.stats.load_end_time then
     local duration = elapsed_ms(M.stats.load_start_time, M.stats.load_end_time)
     table.insert(stats, '  Load time: ' .. string.format('%.2fms', duration))
   end
+
+  if M.stats.load_timing then table.insert(stats, '  Load timing: ' .. string.format('%.2fms', M.stats.load_timing)) end
 
   vim.notify(table.concat(stats, '\n'), vim.log.levels.INFO)
 end
