@@ -19,7 +19,6 @@ M.stats = {
 
 M.config = {
   auto_load_abbreviations = true,
-  autocorrect_paragraph_keymap = '<Leader>d',
   batch_size = 250,
   log_level = 'debug', -- 'debug', 'info', 'warn', 'error'
   source_file = nil,
@@ -82,26 +81,6 @@ function M.setup(opts)
   M.setup_abbreviations_file()
 
   if M.config.auto_load_abbreviations then M.load_abbreviations() end
-
-  if M.config.autocorrect_paragraph_keymap then
-    vim.keymap.set('n', M.config.autocorrect_paragraph_keymap, function()
-      local current = vim.api.nvim_win_get_cursor(0)[1]
-      local start = current
-
-      while start > 1 and vim.fn.getline(start - 1):match '^%s*$' == nil do
-        start = start - 1
-      end
-
-      local stop = current
-      local last_line = vim.fn.line '$'
-
-      while stop < last_line and vim.fn.getline(stop + 1):match '^%s*$' == nil do
-        stop = stop + 1
-      end
-
-      M.autocorrect_range(start, stop)
-    end, { silent = true })
-  end
 end
 
 function M.get_abbreviations_path()
@@ -361,7 +340,7 @@ end
 function M.reload_abbreviations()
   log('info', 'Reloading abbreviations')
   M.clear_abbreviations()
-  read_file_async(M.target_file, process_abbreviations)
+  M.load_abbreviations()
 end
 
 -- Stats
@@ -377,28 +356,26 @@ function M.get_abbrev_count()
   )
 end
 
-function M.show_stats()
-  local actual_count = M.get_abbrev_count()
-
-  local stats = {
-    'Autocorrect Statistics:',
-    '  File: ' .. (M.stats.file_loaded_from or 'none'),
-    '  Abbreviations loaded: ' .. M.stats.abbreviations_loaded,
-    '  Actual abbreviations active: ' .. actual_count,
-    '  Loading method: ' .. (M.stats.loading_method or 'unknown'),
-  }
-
-  if M.stats.load_start_time and M.stats.load_end_time then
-    local duration = elapsed_ms(M.stats.load_start_time, M.stats.load_end_time)
-    table.insert(stats, '  Load time: ' .. string.format('%.2fms', duration))
-  end
-
-  if M.stats.load_timing then table.insert(stats, '  Load timing: ' .. string.format('%.2fms', M.stats.load_timing)) end
-
-  vim.notify(table.concat(stats, '\n'), vim.log.levels.INFO)
-end
 
 -- Add autocorrection workflow
+
+function M.autocorrect_paragraph()
+  local current = vim.api.nvim_win_get_cursor(0)[1]
+  local start = current
+
+  while start > 1 and vim.fn.getline(start - 1):match '^%s*$' == nil do
+    start = start - 1
+  end
+
+  local stop = current
+  local last_line = vim.fn.line '$'
+
+  while stop < last_line and vim.fn.getline(stop + 1):match '^%s*$' == nil do
+    stop = stop + 1
+  end
+
+  M.autocorrect_range(start, stop)
+end
 
 function M.autocorrect_range(first, last)
   local lines = vim.api.nvim_buf_get_lines(0, first - 1, last, false)
