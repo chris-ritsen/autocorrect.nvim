@@ -94,6 +94,18 @@ By default, the plugin's abbreviation list is symlinked to
 `~/.local/share/nvim/abbrev`. If you're using a custom file, symlinking is
 automatically skipped.
 
+### Git Hook Setup
+
+To automatically sort and deduplicate the `abbrev` file on commit, install the pre-commit hook:
+
+```bash
+GIT_DIR=$(git rev-parse --git-dir)
+cp hooks/pre-commit "$GIT_DIR/hooks/pre-commit"
+chmod +x "$GIT_DIR/hooks/pre-commit"
+```
+
+This ensures the `abbrev` file stays sorted using `LC_ALL=C sort -u`, matching Neovim's `:sort u` behavior.
+
 ### Autocorrect workflow
 
 1. Position your cursor in a paragraph with spelling errors

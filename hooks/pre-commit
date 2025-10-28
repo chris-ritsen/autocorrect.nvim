@@ -1,0 +1,7 @@
+#!/bin/zsh
+
+# Sort and remove duplicates from abbrev file
+if git diff --cached --name-only | grep -q "^abbrev$"; then
+    LC_ALL=C sort -u abbrev -o abbrev
+    git add abbrev
+fi
