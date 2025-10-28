@@ -356,7 +356,6 @@ function M.get_abbrev_count()
   )
 end
 
-
 -- Add autocorrection workflow
 
 function M.autocorrect_paragraph()
@@ -391,8 +390,16 @@ function M.autocorrect_range(first, last)
       if word == '' then break end
 
       if not suggestions[word] then
-        local sug = vim.fn.spellsuggest(word, 5)
-        local suggestion = (#sug > 0 and not sug[1]:find '%s') and sug[1] or '<correction>'
+        local sug = vim.fn.spellsuggest(word, 20)
+        local suggestion = '<correction>'
+
+        for _, s in ipairs(sug) do
+          if not s:find '%s' and not s:find "'" and not s:find '-' then
+            suggestion = s
+            break
+          end
+        end
+
         suggestions[word] = suggestion
       end
 
